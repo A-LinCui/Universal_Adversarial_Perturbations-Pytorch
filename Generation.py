@@ -145,7 +145,9 @@ for epoch in range(args.epochs):
         writer.writerow([epoch, 100 * train_successful_attack / train_total, 100 * (1 - test_acc), test_loss])
 
     # Save the generated universal perturbation for every epoch
-    universal_per = (universal_perturbation - np.min(universal_perturbation)) / (np.max(universal_perturbation) - np.min(universal_perturbation))
+    universal_per = universal_perturbation.copy()
+    universal_per = abs(universal_per)
+    universal_per = (universal_per - np.min(universal_per)) / (np.max(universal_per) - np.min(universal_per))
     plt.imshow(universal_per.transpose(1, 2, 0))
     plt.savefig(str(epoch) + '_' + str(args.p) + '_universal_perturbation.png')
 
