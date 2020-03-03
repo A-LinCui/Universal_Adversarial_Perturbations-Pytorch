@@ -49,7 +49,7 @@ def test(model, testloader, criterion, perturbation):
             loss += criterion(outputs, labels).item()
     return loss / total, correct / total
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "0"
+os.environ["CUDA_VISIBLE_DEVICES"] = "3"
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--threshold', type=float, default=0.03, help="the difference threshold between the original picture and the adversarial example")
@@ -61,6 +61,7 @@ parser.add_argument('--dataset_address', type=str, default="/home/eva_share/data
 parser.add_argument('--batch_size', type=int, default=64, help="batch size")
 parser.add_argument('--num_workers', type=int, default=32, help="num_workers")
 parser.add_argument('--log_address', type=str, default="Generation_log.csv", help="address of the generation log")
+parser.add_argument('--p', type=int, default=np.inf, help="norm")
 args = parser.parse_args()
 
 # Set the transformation
@@ -122,21 +123,11 @@ for epoch in range(args.epochs):
             if adversarial[0].perturbed is None or adversarial[0].distance.value > args.threshold:
                 pass
             else:
-                """
-                # show the generated adversarial example
-                plt.imshow(adversarial[0].perturbed.transpose(1, 2, 0) / 2 + 0.5)
-                plt.show()
-                """
                 train_successful_attack += 1
                 perturbation = adversarial[0].perturbed - adversarial[0].unperturbed
                 universal_perturbation += perturbation
-                universal_perturbation = project_perturbation(args.radius, np.inf, perturbation)
+                universal_perturbation = project_perturbation(args.radius, args.p, perturbation)
     print("epoch:{}, trainset successful attack:{:.3f}%".format(epoch, 100 * train_successful_attack / train_total))
-
-    # TODO: How to save the generated universal perturbation? Whether to normalization?
-    # Save the generated universal perturbation for every epoch
-    plt.imshow(universal_perturbation.transpose(1, 2, 0))
-    plt.savefig('perturbation/' + str(epoch) + '_universal_perturbation.png')
 
     # Test the generated perturbation on the testset
     test_loss, test_acc = test(model, testloader, criterion, universal_perturbation)
@@ -146,6 +137,11 @@ for epoch in range(args.epochs):
     with open(args.log_address, 'a') as f:
         writer = csv.writer(f)
         writer.writerow([epoch, 100 * train_successful_attack / train_total, 100 * (1 - test_acc), test_loss])
+
+    # Save the generated universal perturbation for every epoch
+    universal_per = (universal_perturbation - np.min(universal_perturbation)) / (np.max(universal_perturbation) - np.min(universal_perturbation))
+    plt.imshow(universal_per.transpose(1, 2, 0))
+    plt.savefig(str(epoch) + '_universal_perturbation.png')
 
     # If the perturbation achieve the set fool rate, break
     if test_acc < 1 - args.foolrate:
