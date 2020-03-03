@@ -23,6 +23,7 @@ import csv
 import matplotlib.pyplot as plt
 import numpy as np
 import argparse
+import time
 
 from resnet import *
 
@@ -49,12 +50,12 @@ def test(model, testloader, criterion, perturbation):
             loss += criterion(outputs, labels).item()
     return loss / total, correct / total
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "3"
+os.environ["CUDA_VISIBLE_DEVICES"] = "1"
 
 parser = argparse.ArgumentParser()
 parser.add_argument('--threshold', type=float, default=0.03, help="the difference threshold between the original picture and the adversarial example")
 parser.add_argument('--epochs', type=int, default=20, help="total epochs")
-parser.add_argument('--radius', type=float, default=0.04, help="projection radius")
+parser.add_argument('--radius', type=float, default=0.05, help="projection radius")
 parser.add_argument('--foolrate', type=float, default=0.8, help="fool rate")
 parser.add_argument('--model_address', type=str, default="ResNet18.pkl", help="address of the pretrained model")
 parser.add_argument('--dataset_address', type=str, default="/home/eva_share/datasets/cifar10", help="address of the dataset")
@@ -103,13 +104,14 @@ fmodel = foolbox.models.PyTorchModel(model, bounds=(-1, 1), num_classes=10)
 attack = foolbox.attacks.DeepFoolAttack(fmodel, distance=foolbox.distances.MeanSquaredDistance)
 
 # Establish the generation log
-with open(args.log_address, 'w') as f:
+with open(str(args.p) + '_' + args.log_address, 'w') as f:
     writer = csv.writer(f)
-    writer.writerow(["epoch", "train_success", "test_success", "test_loss"])
+    writer.writerow(["epoch", "train_success_rate%", "test_success_rate%", "test_loss"])
 
 for epoch in range(args.epochs):
 
     # Generate the universal perturbation on the trainset
+    start_time = time.time()
     train_successful_attack, train_total = 0, 0
     for (images, labels) in trainloader:
         images = images.numpy()
@@ -127,22 +129,27 @@ for epoch in range(args.epochs):
                 perturbation = adversarial[0].perturbed - adversarial[0].unperturbed
                 universal_perturbation += perturbation
                 universal_perturbation = project_perturbation(args.radius, args.p, perturbation)
-    print("epoch:{}, trainset successful attack:{:.3f}%".format(epoch, 100 * train_successful_attack / train_total))
+
+    # Print the statistics
+    end_time = time.time()
+    print("epoch:{}, Consumed Time:{}s".format(epoch, end_time - start_time))
+    print("         trainset successful attack:{:.3f}%".format(epoch, 100 * train_successful_attack / train_total))
 
     # Test the generated perturbation on the testset
     test_loss, test_acc = test(model, testloader, criterion, universal_perturbation)
-    print("          testset successful attack:{:.3f}% loss:{:.3f}".format(epoch, 100 * (1 - test_acc)), test_loss)
+    print("         testset successful attack:{:.3f}% loss:{:.3f}".format(100 * (1 - test_acc), test_loss))
 
     # Save the statistics in the log
-    with open(args.log_address, 'a') as f:
+    with open(str(args.p) + "_" + args.log_address, 'a') as f:
         writer = csv.writer(f)
         writer.writerow([epoch, 100 * train_successful_attack / train_total, 100 * (1 - test_acc), test_loss])
 
     # Save the generated universal perturbation for every epoch
     universal_per = (universal_perturbation - np.min(universal_perturbation)) / (np.max(universal_perturbation) - np.min(universal_perturbation))
     plt.imshow(universal_per.transpose(1, 2, 0))
-    plt.savefig(str(epoch) + '_universal_perturbation.png')
+    plt.savefig(str(epoch) + '_' + str(args.p) + '_universal_perturbation.png')
 
     # If the perturbation achieve the set fool rate, break
     if test_acc < 1 - args.foolrate:
+        print("Universal Perturbation Generated!")
         break
