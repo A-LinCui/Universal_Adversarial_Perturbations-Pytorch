@@ -1,5 +1,8 @@
-# Generate Digital Universal Adversarial Examples on CIAFR10
-# Created by Junbo Zhao 2020.3.3
+# Digital Universal Adversarial Perturbation Generation
+# Victim Model: ResNet18/50/101
+# Dataset: CIFAR10
+# Adversarial Attack Algorithm: FGSM / DeepFool
+# Created by Junbo Zhao 2020.3.4
 
 """ Implementation of Universal adversarial perturbations in PyTorch.
 Reference:
@@ -8,6 +11,12 @@ Reference:
 [2] Jonas Rauber, Wieland Brendel, Matthias Bethge
     Foolbox: A Python toolbox to benchmark the robustness of machine learning models. arXiv:1707.04131
 """
+
+# TODO:Nothing. Failed.\
+#  While following paper[1] to attack with DeepFool, I don't know why it cannot converge on the training set.\
+#  And while attacking with FGSM, a well-performed universal adversarial perturbation is found on the training set.\
+#  But I don't know why the found perturbation cannot generalize to the test set.\
+#  I even doubt that the algorithm cannot work on CIFAR10 at all.
 
 import torch
 import torchvision
@@ -50,12 +59,12 @@ def test(model, testloader, criterion, perturbation):
             loss += criterion(outputs, labels).item()
     return loss / total, correct / total
 
-os.environ["CUDA_VISIBLE_DEVICES"] = "1"
+os.environ["CUDA_VISIBLE_DEVICES"] = "0"
 
 parser = argparse.ArgumentParser()
-parser.add_argument('--threshold', type=float, default=0.03, help="the difference threshold between the original picture and the adversarial example")
+parser.add_argument('--threshold', type=float, default=0.001, help="the difference threshold between the original picture and the adversarial example")
 parser.add_argument('--epochs', type=int, default=20, help="total epochs")
-parser.add_argument('--radius', type=float, default=0.05, help="projection radius")
+parser.add_argument('--radius', type=float, default=0.1, help="projection radius")
 parser.add_argument('--foolrate', type=float, default=0.8, help="fool rate")
 parser.add_argument('--model_address', type=str, default="ResNet18.pkl", help="address of the pretrained model")
 parser.add_argument('--dataset_address', type=str, default="/home/eva_share/datasets/cifar10", help="address of the dataset")
@@ -63,6 +72,7 @@ parser.add_argument('--batch_size', type=int, default=64, help="batch size")
 parser.add_argument('--num_workers', type=int, default=32, help="num_workers")
 parser.add_argument('--log_address', type=str, default="Generation_log.csv", help="address of the generation log")
 parser.add_argument('--p', type=int, default=np.inf, help="norm")
+parser.add_argument('--sample_num', type=int, default=100, help="number of the sampled images to generate the universal perturbation")
 args = parser.parse_args()
 
 # Set the transformation
@@ -96,12 +106,12 @@ for param in model.parameters():
     param.requires_grad = False
 
 # Initialize the universal perturbation
-universal_perturbation = np.zeros((3, 32, 32)).astype(np.float32)
+universal_perturbation = torch.rand(3, 32, 32)
 
 # Setup the attack method
 criterion = nn.CrossEntropyLoss()
 fmodel = foolbox.models.PyTorchModel(model, bounds=(-1, 1), num_classes=10)
-attack = foolbox.attacks.DeepFoolAttack(fmodel, distance=foolbox.distances.MeanSquaredDistance)
+attack = foolbox.attacks.FGSM(fmodel, distance=foolbox.distances.MeanSquaredDistance)
 
 # Establish the generation log
 with open(str(args.p) + '_' + args.log_address, 'w') as f:
@@ -112,28 +122,50 @@ for epoch in range(args.epochs):
 
     # Generate the universal perturbation on the trainset
     start_time = time.time()
-    train_successful_attack, train_total = 0, 0
+    train_successful_attack, train_total, original_successful_attack = 0, 0, 0
     for (images, labels) in trainloader:
-        images = images.numpy()
+        if train_total > args.sample_num:
+            break
+        images.cuda()
+        outputs = model(images)
+        _, predicts = torch.max(outputs.data, 1)
+        images = images.cpu().numpy()
         labels = labels.numpy()
         train_total += images.shape[0]
         for i in range(images.shape[0]):
+            # Add the universal perturbation to the original picture
             images[i] = np.clip((images[i] + universal_perturbation), a_min=-1, a_max=1)
             image = images[i][np.newaxis, :, :, :]
-            label = np.array([labels[i]])
-            adversarial = attack(image, label, unpack=False)
-            if adversarial[0].perturbed is None or adversarial[0].distance.value > args.threshold:
-                pass
-            else:
+            new_image = image.copy()
+
+            # Get the model's predict of the perturbed picture
+            image = torch.from_numpy(image).cuda()
+            output = model(image)
+            _, predict = torch.max(output.data, 1)
+
+            # If the original predict is the same as the perturbed predict, no perturbation will be added to the universal perturbation
+            if predicts[i] != predict[0]:
                 train_successful_attack += 1
-                perturbation = adversarial[0].perturbed - adversarial[0].unperturbed
-                universal_perturbation += perturbation
-                universal_perturbation = project_perturbation(args.radius, args.p, perturbation)
+                original_successful_attack += 1
+
+            # If not, generate the perturbation and add it to the universal perturbation
+            else:
+                label = predicts[i].cpu().numpy()
+                label = np.array([label])
+                adversarial = attack(new_image, label, unpack=False)
+                # If the attack fails, pass
+                if adversarial[0].perturbed is None or adversarial[0].distance.value > args.threshold:
+                    pass
+                else:
+                    train_successful_attack += 1
+                    perturbation = adversarial[0].perturbed - adversarial[0].unperturbed
+                    universal_perturbation += perturbation
+                    universal_perturbation = project_perturbation(args.radius, args.p, universal_perturbation)
 
     # Print the statistics
     end_time = time.time()
     print("epoch:{}, Consumed Time:{}s".format(epoch, end_time - start_time))
-    print("         trainset successful attack:{:.3f}%".format(epoch, 100 * train_successful_attack / train_total))
+    print("         trainset successful attack:{:.3f}% original successful attack:{:.3f}%".format(100 * train_successful_attack / train_total, 100 * original_successful_attack / train_total))
 
     # Test the generated perturbation on the testset
     test_loss, test_acc = test(model, testloader, criterion, universal_perturbation)
